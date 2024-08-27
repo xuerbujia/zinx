@@ -13,15 +13,17 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gorilla/websocket"
+
 	"github.com/aceld/zinx/logo"
 	"github.com/aceld/zinx/zconf"
 	"github.com/aceld/zinx/zdecoder"
 	"github.com/aceld/zinx/zlog"
-	"github.com/gorilla/websocket"
+
+	"github.com/xtaci/kcp-go"
 
 	"github.com/aceld/zinx/ziface"
 	"github.com/aceld/zinx/zpack"
-	"github.com/xtaci/kcp-go"
 )
 
 // Server interface implementation, defines a Server service class
@@ -46,7 +48,8 @@ type Server struct {
 
 	// Routing mode (路由模式)
 	RouterSlicesMode bool
-
+	// Request 对象池模式
+	RequestPoolMode bool
 	// Current server's connection manager (当前Server的链接管理器)
 	ConnMgr ziface.IConnManager
 
@@ -111,6 +114,12 @@ type KcpConfig struct {
 	// RCV_BUF, this unit is the packet, default 32.
 	// (RCV_BUF接收缓冲区大小，单位是包，默认是32)
 	KcpRecvWindow int
+	// FEC data shards, default 0.
+	// (FEC数据分片,用于前向纠错比例配制) 默认是0
+	KcpFecDataShards int
+	// FEC parity shards, default 0.
+	// (FEC校验分片,用于前向纠错比例配制) 默认是0
+	KcpFecParityShards int
 }
 
 // newServerWithConfig creates a server handle based on config
@@ -127,6 +136,7 @@ func newServerWithConfig(config *zconf.Config, ipVersion string, opts ...Option)
 		KcpPort:          config.KcpPort,
 		msgHandler:       newMsgHandle(),
 		RouterSlicesMode: config.RouterSlicesMode,
+		RequestPoolMode:  config.RequestPoolMode,
 		ConnMgr:          newConnManager(),
 		exitChan:         nil,
 		// Default to using Zinx's TLV data pack format
@@ -140,14 +150,16 @@ func newServerWithConfig(config *zconf.Config, ipVersion string, opts ...Option)
 			},
 		},
 		kcpConfig: &KcpConfig{
-			KcpACKNoDelay: config.KcpACKNoDelay,
-			KcpStreamMode: config.KcpStreamMode,
-			KcpNoDelay:    config.KcpNoDelay,
-			KcpInterval:   config.KcpInterval,
-			KcpResend:     config.KcpResend,
-			KcpNc:         config.KcpNc,
-			KcpSendWindow: config.KcpSendWindow,
-			KcpRecvWindow: config.KcpRecvWindow,
+			KcpACKNoDelay:      config.KcpACKNoDelay,
+			KcpStreamMode:      config.KcpStreamMode,
+			KcpNoDelay:         config.KcpNoDelay,
+			KcpInterval:        config.KcpInterval,
+			KcpResend:          config.KcpResend,
+			KcpNc:              config.KcpNc,
+			KcpSendWindow:      config.KcpSendWindow,
+			KcpRecvWindow:      config.KcpRecvWindow,
+			KcpFecDataShards:   config.KcpFecDataShards,
+			KcpFecParityShards: config.KcpFecParityShards,
 		},
 	}
 
@@ -298,7 +310,7 @@ func (s *Server) ListenTcpConn() {
 }
 
 func (s *Server) ListenWebsocketConn() {
-
+	zlog.Ins().InfoF("[START] WEBSOCKET Server name: %s,listener at IP: %s, Port %d is starting", s.Name, s.IP, s.WsPort)
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// 1. Check if the server has reached the maximum allowed number of connections
 		// (设置服务器最大连接控制,如果超过最大连接，则等待)
@@ -350,7 +362,7 @@ func (s *Server) ListenWebsocketConn() {
 func (s *Server) ListenKcpConn() {
 
 	// 1. Listen to the server address
-	listener, err := kcp.Listen(fmt.Sprintf("%s:%d", s.IP, s.KcpPort))
+	listener, err := kcp.ListenWithOptions(fmt.Sprintf("%s:%d", s.IP, s.KcpPort), nil, s.kcpConfig.KcpFecDataShards, s.kcpConfig.KcpFecParityShards)
 	if err != nil {
 		zlog.Ins().ErrorF("[START] resolve KCP addr err: %v\n", err)
 		return
@@ -408,10 +420,10 @@ func (s *Server) Start() {
 	zlog.Ins().InfoF("[START] Server name: %s,listener at IP: %s, Port %d is starting", s.Name, s.IP, s.Port)
 	s.exitChan = make(chan struct{})
 
-	// Add decoder to interceptors
-	// (将解码器添加到拦截器)
+	// Add decoder to interceptors head
+	// (将解码器添加到拦截器最前面)
 	if s.decoder != nil {
-		s.msgHandler.AddInterceptor(s.decoder)
+		s.msgHandler.SetHeadInterceptor(s.decoder)
 	}
 	// Start worker pool mechanism
 	// (启动worker工作池机制)

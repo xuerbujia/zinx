@@ -89,6 +89,10 @@ func UserConfToGlobal(config *Config) {
 		GlobalObject.RouterSlicesMode = config.RouterSlicesMode
 	}
 
+	if config.RequestPoolMode {
+		GlobalObject.RequestPoolMode = config.RequestPoolMode
+	}
+
 	if config.KcpPort != 0 {
 		GlobalObject.KcpPort = config.KcpPort
 	}
@@ -123,6 +127,14 @@ func UserConfToGlobal(config *Config) {
 
 	if config.KcpRecvWindow != 0 {
 		GlobalObject.KcpRecvWindow = config.KcpRecvWindow
+	}
+
+	if config.KcpFecDataShards != 0 {
+		GlobalObject.KcpFecDataShards = config.KcpFecDataShards
+	}
+
+	if config.KcpFecParityShards != 0 {
+		GlobalObject.KcpFecParityShards = config.KcpFecParityShards
 	}
 
 }

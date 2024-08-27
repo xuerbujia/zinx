@@ -11,12 +11,12 @@ import (
 	"time"
 
 	"github.com/aceld/zinx/zconf"
+	"github.com/aceld/zinx/ziface"
 	"github.com/aceld/zinx/zinterceptor"
 	"github.com/aceld/zinx/zlog"
 	"github.com/aceld/zinx/zpack"
-	"github.com/gorilla/websocket"
 
-	"github.com/aceld/zinx/ziface"
+	"github.com/gorilla/websocket"
 )
 
 // Connection TCP connection module
@@ -66,10 +66,6 @@ type Connection struct {
 	// Lock to protect the current property
 	// (保护当前property的锁)
 	propertyLock sync.Mutex
-
-	// The current connection's close state
-	// (当前连接的关闭状态)
-	closed int32
 
 	// Which Connection Manager the current connection belongs to
 	// (当前链接是属于哪个Connection Manager的)
@@ -127,7 +123,6 @@ func newServerConn(server ziface.IServer, conn net.Conn, connID uint64) ziface.I
 		conn:            conn,
 		connID:          connID,
 		connIdStr:       strconv.FormatUint(connID, 10),
-		closed:          0,
 		startWriterFlag: 0,
 		msgBuffChan:     nil,
 		property:        nil,
@@ -165,7 +160,6 @@ func newClientConn(client ziface.IClient, conn net.Conn) ziface.IConnection {
 		conn:            conn,
 		connID:          0,  // client ignore
 		connIdStr:       "", // client ignore
-		closed:          0,
 		startWriterFlag: 0,
 		msgBuffChan:     nil,
 		property:        nil,
@@ -393,6 +387,10 @@ func (c *Connection) SendToQueue(data []byte) error {
 
 	// Send timeout
 	select {
+	case <-c.ctx.Done():
+		// Close all channels associated with the connection
+		close(c.msgBuffChan)
+		return errors.New("connection closed when send buff msg")
 	case <-idleTimeout.C:
 		return errors.New("send buff msg timeout")
 	case c.msgBuffChan <- data:
@@ -466,16 +464,6 @@ func (c *Connection) Context() context.Context {
 }
 
 func (c *Connection) finalizer() {
-	// If the connection has already been closed
-	if c.isClosed() == true {
-		return
-	}
-
-	//set closed
-	if !c.setClose() {
-		return
-	}
-
 	// Call the callback function registered by the user when closing the connection if it exists
 	// (如果用户注册了该链接的	关闭回调业务，那么在此刻应该显示调用)
 	c.callOnConnStop()
@@ -491,11 +479,6 @@ func (c *Connection) finalizer() {
 	// Remove the connection from the connection manager
 	if c.connManager != nil {
 		c.connManager.Remove(c)
-	}
-
-	// Close all channels associated with the connection
-	if c.msgBuffChan != nil {
-		close(c.msgBuffChan)
 	}
 
 	go func() {
@@ -560,11 +543,7 @@ func (c *Connection) GetMsgHandler() ziface.IMsgHandle {
 }
 
 func (c *Connection) isClosed() bool {
-	return atomic.LoadInt32(&c.closed) != 0
-}
-
-func (c *Connection) setClose() bool {
-	return atomic.CompareAndSwapInt32(&c.closed, 0, 1)
+	return c.ctx == nil || c.ctx.Err() != nil
 }
 
 func (c *Connection) setStartWriterFlag() bool {
